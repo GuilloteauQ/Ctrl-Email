@@ -1,0 +1,9 @@
+{
+    "kp": 0.3,
+    "ki": 0.1,
+    "kd": 0.1,
+    "initial": 10,
+    "max_value": 3000,
+    "credentials_path": "credentials.json"
+}
+

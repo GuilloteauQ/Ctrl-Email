@@ -2,6 +2,8 @@ from __future__ import print_function
 import pickle
 import os.path
 import time
+import json
+import sys
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -40,7 +42,7 @@ class PID:
         return self.variable
 
 class GmailClient:
-    def __init__(self, credential_path="credential.json"):
+    def __init__(self, credentials_path="credentials.json"):
 
         creds = None
         if os.path.exists('token.pickle'):
@@ -52,7 +54,7 @@ class GmailClient:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    credential_path, SCOPES)
+                    credentials_path, SCOPES)
                 creds = flow.run_local_server(port=0)
             # Save the credentials for the next run
             with open('token.pickle', 'wb') as token:
@@ -103,9 +105,38 @@ class GmailClient:
                 unread_emails += 1
         return (new_emails, unread_emails,  (1 - 2 * int(new_emails == 0)) * (self.time_stamp_most_recent_message - self.current_time))
 
+def extract_config(filename):
+    controller = PID()
+    credentials_path = "credentials.json"
+    with open(filename) as config_file:
+        json_data = json.load(config_file)
+        for key, val in json_data.items():
+            if key == "kp":
+               controller.kp = float(val)
+            elif key == "ki":
+               controller.ki = float(val)
+            elif key == "kd":
+               controller.kd = float(val)
+            elif key == "initial":
+               controller.variable = float(val)
+            elif key == "max_value":
+               controller.max_value = float(val)
+            elif key == "credentials_path":
+                credentials_path = val
+            else:
+                print("Unknown key value pair: ({}, {})".format(key, val))
+    client = GmailClient(credentials_path = credentials_path)
+    return (controller, client)
+
+
 def main():
-    controller = PID(variable = 10, kp = 0.3, ki = 0.1, kd = 0.1)
-    client = GmailClient()
+    args = sys.argv
+    if len(args) > 1:
+        config_file_name = args[1]
+    else:
+        config_file_name = "config.json"
+
+    (controller, client) = extract_config(config_file_name)
     while True:
         sleep_time = controller.get()
         print(" [*] Sleeping for {} seconds".format(sleep_time))
