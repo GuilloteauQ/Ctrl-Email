@@ -10,9 +10,8 @@
                 "max_value": 3000
             },
             "client": {
-                "host": "imap.gmail.com",
-                "user": "name.surname@gmail.com",
-                "pass": "securedpassword"
+                "type": "Gmail",
+                "credentials_path": "./path/to/credentials.json"
             }
         },
         {
@@ -25,6 +24,7 @@
                 "max_value": 1800
             },
             "client": {
+                "type": "IMAPS",
                 "host": "imap.work.fr",
                 "user": "name.surname@awesome_company.fr",
                 "pass": "another_password_to_remember"

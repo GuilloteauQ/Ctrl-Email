@@ -8,11 +8,15 @@ import gmail_client
 import imap_client
 import controlled_client
 
-def json_to_client(json_obj):
+def json_to_imap_client(json_obj):
     imap_host = json_obj["host"]
     imap_user = json_obj["user"]
     imap_pass = json_obj["pass"]
     return imap_client.IMAPClient(imap_host, imap_user, imap_pass)
+
+def json_to_gmail_client(json_obj):
+    credentials_path = json_obj["credentials_path"]
+    return gmail_client.GmailClient(credentials_path)
 
 def json_to_controller(json_obj):
     kp = float(json_obj["kp"])
@@ -24,7 +28,11 @@ def json_to_controller(json_obj):
 
 def json_to_controlled_client(json_obj):
     name = json_obj["name"]
-    client = json_to_client(json_obj["client"])
+    json_client = json_obj["client"]
+    if json_client["type"] == "Gmail":
+        client = json_to_gmail_client(json_client)
+    else:
+        client = json_to_imap_client(json_client)
     controller = json_to_controller(json_obj["controller"])
     return controlled_client.ControlledClient(name, client, controller)
 

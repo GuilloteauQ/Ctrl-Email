@@ -34,6 +34,12 @@ class GmailClient:
         self.current_time = int(time.time())
         self.time_stamp_most_recent_message = self.current_time
 
+    def connect(self):
+        pass
+
+    def disconnect(self):
+        pass
+
     def fetch_unread_messages(self):
         try:
             self.messages = self.service.users().messages().list(userId='me', labelIds=["UNREAD", "INBOX", "CATEGORY_PERSONAL"]).execute()["messages"]
