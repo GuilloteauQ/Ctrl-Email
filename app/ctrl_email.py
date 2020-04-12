@@ -3,10 +3,11 @@ import json
 import sys
 import notify2
 from datetime import datetime
-import pid
-import gmail_client
-import imap_client
-import controlled_client
+import app
+from app import pid
+from app import gmail_client
+from app import imap_client
+from app import controlled_client
 
 def json_to_imap_client(json_obj):
     imap_host = json_obj["host"]

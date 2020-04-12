@@ -1,5 +1,5 @@
-import pid
-import imap_client
+from app import pid
+from app import imap_client
 import time
 import notify2
 from datetime import datetime
