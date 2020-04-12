@@ -31,20 +31,48 @@ You can modify the configuation of the PID Controller through a configuration fi
 
 ```json
 # config.json
+
 {
-  "kp": 0.1,
-  "ki": 0.1,
-  "kd": 0.1,
-  "max_value": 1000,
-  "initial": 100
+    "cclients":[
+        {
+            "name": "Perso",
+            "controller": {
+                "kp": 0.1,
+                "ki": 0.1,
+                "kd": 0.1,
+                "initial": 10,
+                "max_value": 3000
+            },
+            "client": {
+                "host": "imap.gmail.com",
+                "user": "name.surname@gmail.com",
+                "pass": "securedpassword"
+            }
+        },
+        {
+            "name": "Work",
+            "controller": {
+                "kp": 0.3,
+                "ki": 0.0,
+                "kd": 0.1,
+                "initial": 10,
+                "max_value": 1800
+            },
+            "client": {
+                "host": "imap.work.fr",
+                "user": "name.surname@awesome_company.fr",
+                "pass": "another_password_to_remember"
+            }
+        }
+    ]
 }
 ```
 
-* ``kp``: Proportional Gain of the PID Controller (default ``0``)
+* ``kp``: Proportional Gain of the PID Controller
 
-* ``ki``: Integral Gain of the PID Controller (default ``0``)
+* ``ki``: Integral Gain of the PID Controller
 
-* ``kd``: Derivative Gain of the PID Controller (default ``0``)
+* ``kd``: Derivative Gain of the PID Controller
 
 * ``max_value``: Upper bound of possible output of the controller
 
