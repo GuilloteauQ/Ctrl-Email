@@ -1,4 +1,5 @@
 import time
+import os.path
 import json
 import sys
 import notify2
@@ -44,15 +45,19 @@ def extract_config(filename):
 
 
 def main():
-    args = sys.argv
-    if len(args) > 1:
-        config_file_name = args[1]
+    path_config_folder = "~/.config/ctrl_email/config.json"
+    path_home_folder = "~/.ctrl_email.json"
+    if os.path.exists(path_config_folder):
+        config_file_path = path_config_folder
+    elif os.path.exists(path_home_folder):
+        config_file_path = path_home_folder
     else:
-        config_file_name = "config.json"
+        print("Config file must be either in {} or in {}".format(path_home_folder, path_config_folder))
+        return 1
 
     cclients = extract_config(config_file_name)
 
-    notify2.init("Ctrl-Gmail")
+    notify2.init("Ctrl-Email")
     notifyer = notify2.Notification(None, icon="")
     notifyer.set_urgency(notify2.URGENCY_NORMAL)
     notifyer.set_timeout(10000)

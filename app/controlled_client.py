@@ -25,7 +25,7 @@ class ControlledClient:
 
     def notify_me(self, notifier):
         if self.new_emails + self.unread_emails > 0:
-            title = "Ctrl-Gmail ({}): {} new and {} unread message(s)".format(self.name, self.new_emails, self.unread_emails )
+            title = "Ctrl-Email ({}): {} new and {} unread message(s)".format(self.name, self.new_emails, self.unread_emails )
             next_check = datetime.fromtimestamp(int(time.time() + self.sleep_time)).strftime("%H:%M:%S")
             description = "Next check at {}".format(next_check)
             notifier.update(title, description) 
