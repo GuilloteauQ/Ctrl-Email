@@ -1,9 +1,9 @@
-# Ctrl-Gmail
-PID controlled application querying your Gmail account for new messages
+# Ctrl-Email
+PID controlled application querying your Email accounts for new messages
 
 ## The idea
 
-Checks periodically for new emails in your Gmail.
+Checks periodically for new emails using IMAPS.
 
 The period between 2 queries is regulated by a [PID Controller](https://en.wikipedia.org/wiki/PID_controller).
 
@@ -16,25 +16,13 @@ TODO
 ### Others
 
 ```bash
-git clone https://github.com/GuilloteauQ/Ctrl-Gmail.git
+git clone https://github.com/GuilloteauQ/Ctrl-Email.git
 ```
-
-## Setup
-
-### Gmail API
-
-To use ``Ctrl-Gmail`` you will need your credentials for your Gmail account ([see here](https://developers.google.com/gmail/api/quickstart/python)).
-
-Clic on ``Enable the Gmail API`` and save the credentials.
-
-### Python
-
-TODO
 
 ## Running
 
 ```bash
-python ctrl_gmail.py config.json
+python ctrl_email.py config.json
 ```
 
 ## Configuration
