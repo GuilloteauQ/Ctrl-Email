@@ -1,0 +1,35 @@
+{
+    "cclients":[
+        {
+            "name": "Perso",
+            "controller": {
+                "kp": 0.1,
+                "ki": 0.1,
+                "kd": 0.1,
+                "initial": 10,
+                "max_value": 3000
+            },
+            "client": {
+                "host": "imap.gmail.com",
+                "user": "name.surname@gmail.com",
+                "pass": "securedpassword"
+            }
+        },
+        {
+            "name": "Work",
+            "controller": {
+                "kp": 0.3,
+                "ki": 0.0,
+                "kd": 0.1,
+                "initial": 10,
+                "max_value": 1800
+            },
+            "client": {
+                "host": "imap.work.fr",
+                "user": "name.surname@awesome_company.fr",
+                "pass": "another_password_to_remember"
+            }
+        }
+    ]
+}
+
