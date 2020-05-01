@@ -1,0 +1,863 @@
+---
+title: "How to reduce the number of email server lookup requests while keeping error low ?"
+classoption: twocolumn
+author: |
+    | Quentin Guilloteau
+    | Grenoble INP - Inria Grenoble
+header-includes:
+    - \usepackage{graphicx}
+    - \usepackage{tikz}
+    - \usetikzlibrary{decorations.pathreplacing,angles,quotes}
+    - \usepackage{stmaryrd}
+    - \usepackage{mathtools}
+    - \DeclarePairedDelimiter{\ceil}{\lceil}{\rceil}
+    - \DeclarePairedDelimiter{\floor}{\lfloor}{\rfloor}
+bibliography: "references.bib"
+output:
+    pdf_document:
+        number_sections: true
+        fig_caption: true
+    html_document:
+        number_sections: true
+        code_folding: hide
+        df_print: paged
+        highlight: tango
+        theme: cerulean
+        toc: yes
+        toc_float:
+            collapsed: yes
+            smooth_scroll: no
+params:
+    filename:
+        value: ""
+abstract: "More and more people are using email clients everyday. But these clients are using strategies to look for new emails that are generating high traffic. In this paper, we present some strategies to reduce the number of requests while keeping the time between a sent email and its reception as low as possible."
+---
+
+
+```{r, library_loading, include = FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(lubridate)
+library(knitr)
+library(codetools)
+options(scipen=999)
+# opts_chunk$set(autodep = TRUE)
+# dep_auto()
+```
+
+# Introduction
+
+In the past decade, the number of people working in desk-jobs has greatly increased.
+With this, the need to communicate using Emails.
+Emails are very useful to share information with people geographically far from us.
+
+
+However, in order to know if we receive a new email, we need to ask a central server.
+These requests are managed by your client (web client or application).
+The strategy used by these clients is to send a request to the server with a given time interval.
+For example, every five minute the client will ask the server for new messages.
+
+
+If we keep our mail client open during the day, this could generate a significant number of requests.
+Moreover, most of the time, the server will respond that there are no new emails.
+
+```{r, intro, include=FALSE, message=FALSE}
+start_time_work <- 9
+end_time_work <- 6
+total_time_work <- ((12 + end_time_work) - start_time_work) * 60 * 60
+bytes_per_req <- 2415
+total_bytes_5min <- as.integer(bytes_per_req * total_time_work / (5 * 60))
+total_bytes_30min <- as.integer(bytes_per_req * total_time_work / (30 * 60))
+```
+
+
+Let us take an example.
+Imagine you start your mail client at `r start_time_work`am and close it at `r end_time_work`pm.
+Your client sends a request to the server every 5 minutes.
+The request will require some TCP magic, and the total exchange will be around 2 kB (`r bytes_per_req` B in my case).
+So at the end of the day, your client would have been responsible for `r as.integer(total_bytes_5min/1000)` kB.
+This would represent `r as.integer(5 * total_bytes_5min / 1000)` kB per work week (i.e. 5 days), `r as.integer(5 * 4 * total_bytes_5min / 1000000)` GB per month and `r as.integer(5 * 4 * 12 * total_bytes_5min / 1000000)` GB yearly.
+
+
+A longer time interval between two server requests will also decrease the reactivity to an email.
+Indeed, if someone sends me an email between two server requests, I have to wait the next request to know that I receive an email.
+There is thus a tradeoff to find between the number of requests sent and the time between a mail is sent to us and the time we receive it.
+
+
+In this paper, we will present some options to reduce the number of requests sent to the server while keeping the error low.
+We will start by doing an analysis of the emails I have received to extract information for our next models.
+We will continue by finding an approximation of the optimal time interval between two server request.
+Then we will look into a probiblistic approach and finish with a solution involving control theory.
+
+# Email Distribution
+
+We will take a look at the emails I have received on my school account during my scholarship.
+
+```{r, reading_data, include=FALSE, cache=TRUE}
+df <- read.csv(params$filename, header = F)
+colnames(df) <- c("timestamp")
+df$timestamp <- sort(df$timestamp)
+total_emails <- length(df$timestamp)
+time_interval <- 24 * 60 * 60
+total_days <- as.integer((max(df$timestamp) - min(df$timestamp)) / time_interval)
+```
+
+By looking a the data, I have received `r total_emails` emails over a `r total_days` day span.
+
+## Distribution of number of emails received everyday
+
+
+```{r, time_managment, message=FALSE, include=FALSE, cache=TRUE}
+df$time <- as.POSIXct(df$timestamp, origin="1970-01-01")
+df$day <- as.Date(df$time, format="%d/%m/%Y")
+df$seconds <- as.integer(difftime(df$time, df$day))
+d <- df %>% group_by(day) %>% summarise(nb_mail = n())
+nb_days_without_emails <- total_days - nrow(d)
+```
+
+```{r, lambda_computation, include=FALSE, cache=TRUE}
+mails_per_day <- d %>% group_by(nb_mail) %>% summarise(count = n())
+mails_per_day[nrow(mails_per_day) + 1,] <- c(0, nb_days_without_emails)
+mails_per_day <- mails_per_day[order(mails_per_day$nb_mail),]
+mails_per_day$density <- mails_per_day$count / sum(mails_per_day$count)
+lambda_w <- weighted.mean(mails_per_day$nb_mail, mails_per_day$count)
+kable(mails_per_day)
+```
+
+In average, I receive `r lambda_w` mails per day with the distribution in Figure \ref{fig:distrib}.
+
+It makes sense to try to fit an exponential distribution on this data.
+
+```{r, setting_lambda_value, include=FALSE}
+lambda <- mails_per_day$density[1]
+Sys.setenv(LAMBDA = lambda)
+```
+
+As a first estimation, we can take the value at 0 to get the parameter of the distribution ($\lambda = `r lambda`$)
+
+```{r, plotting_exp_distrib, echo=FALSE, fig.cap="\\label{fig:distrib}Exponential Distribution for number of mails in a day"}
+mails_per_day$expo_law <- lambda * exp(- lambda * (mails_per_day$nb_mail))
+ggplot(mails_per_day) +
+    geom_point(aes(x = nb_mail, y = density)) +
+    geom_line(aes(x = nb_mail, y = expo_law)) +
+    xlab("Number of emails") +
+    ylab("Density") +
+    ggtitle("Distribution of the Number of Emails Received in a Day") +
+    theme_bw()
+```
+
+## Email Distribution during the Day
+
+We now want to know when do we receive emails during the day.
+
+Figure \ref{fig:hist} depicts the time of reception of the emails during the day.
+
+```{r, histogram, echo=FALSE, message=FALSE, fig.cap="\\label{fig:hist}Time of reception of the emails during a day"}
+fit <- fitdistr(df$seconds, "normal")
+para <- fit$estimate
+# para
+mean <- para[1]
+sd <- para[2]
+Sys.setenv(MEAN = mean)
+Sys.setenv(STD_DEV = sd)
+df$dnorm <- dnorm(df$seconds, mean, sd)
+ggplot(data = df) +
+    geom_histogram(aes(x = seconds, y = ..density..), bins=50) +
+    stat_function(fun = dnorm, args = list(mean = mean, sd = sd)) +
+    xlab("Seconds of the day") +
+    ylab("Density") +
+    ggtitle("Distribution of the Time of Reception") +
+    theme_bw()
+```
+
+We can see two spikes, they are around 10am and 3pm.
+
+As an approximation, we can fit a normal distribution over the data.
+The time of reception of an email will thus follow the distribution $\mathcal{N}(\mu, \sigma ^2)$.
+With $\mu = `r as.integer(mean)`$ and $\sigma = `r as.integer(sd)`$.
+
+## Mean Time between two Emails
+\label{sec:mean_time_2_emails}
+
+Now that we know that the distribution of emails received during the day is normal ($\mathcal{N}(\mu, \sigma^2)$), we can compute the mean time between two received emails.
+
+Let $T_1, T_2 \rightsquigarrow \mathcal{N}(\mu, \sigma^2)$.
+We want to compute $\mathbb{E}[|T_1 - T_2|]$.
+
+So let $Y = |T_1 - T_2|$.
+The distribution function of $Y$ [@stack] is:
+
+\begin{equation}
+f_Y(x) = \frac{1}{\sigma\sqrt{\pi}}e^{-\frac{1}{4}\left(\frac{x}{\sigma}\right)^2}
+\end{equation}
+
+Thus we have the mean of $Y$:
+
+\begin{equation}
+\mathbb{E}[Y] = \int_0^{+\infty}xf_Y(x)dx= \frac{2\sigma}{\sqrt{\pi}}
+\end{equation}
+
+With our distribution, we thus have a mean time between two received emails of $`r 2*sd/sqrt(pi)`$, which represents `r as.integer(2 * sd / sqrt(pi))/3600` hours.
+
+## Summary
+
+To summarise our observations:
+
+* I receive a number of emails per day following an exponential distribution $Exp(\lambda)$ with $\lambda = `r lambda`$.
+
+* The time of reception of an email during the day can be model by a normal distribution $\mathcal{N}(\mu, \sigma ^2)$ with $\mu = `r as.integer(mean)`$ and $\sigma = `r as.integer(sd)`$.
+
+* The average time between two received emails is `r 2*sd/sqrt(pi)`seconds.
+
+
+# Problem Definition
+
+The problem that we are looking at is to reduce the number of requests to the server, while having the time between an email is sent to us and the time we receive it (next request) low.
+
+There are multiple possible ways to model this problem, we decided to model it as follow:
+
+There are $N$ emails sent where $N \rightsquigarrow Exp(\lambda)$.
+
+Let $(T_j)_j$ be the send times of the emails, $\forall ~ 1 \leq j \leq N, T_j \rightsquigarrow \mathcal{N}(\mu, \sigma^2)$.
+
+We operate in seconds and during one day.
+The minimal value is thus 0 and the maximal is `r 24*60*60`.
+We define $T_0 = 0$ and $T_{N} = `r 24*60*60`$.
+
+Let $(U_n)_n$ be the times of the requests associated with the chosen requests strategy.
+
+We define $J$, our cost function, as:
+
+\begin{equation}
+\displaystyle J = \sum _{\substack{n \in \mathbb{N}\\U_n \in [T_0, T_N]}} \left(U_n - T(U_n)\right)^2
+\end{equation}
+
+with:
+
+\begin{equation}
+T(U_n) =
+    \begin{cases}
+        T_i, & \text{if}\ \exists i \in \llbracket 1, N \rrbracket ,i = \min \lbrace j, U_{n-1} < T_j \leq U_{n} \rbrace \\
+        T_i, & \text{otherwise, $i$ such that}, T_i \leq U_n \leq T_{i+1}
+    \end{cases}
+\end{equation}
+
+The quantity $(U_n - T(U_n))$ represents the error.
+A low value means that the time between the last request and the reception of the email is low.
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[scale=0.5]
+% Timeline
+\draw [->] (3, 0) -- (19, 0);
+% Requests
+\draw [->, dashed] (3, -2) -- (3, 0);
+\draw (3, -2.5) node {$req$};
+\draw [->, dashed] (6, -2) -- (6, 0);
+\draw (6, -2.5) node {$req$};
+\draw [->, dashed] (9, -2) -- (9, 0);
+\draw (9, -2.5) node {$req$};
+\draw [->, dashed] (12, -2) -- (12, 0);
+\draw (12, -2.5) node {$req$};
+\draw [->, dashed] (15, -2) -- (15, 0);
+\draw (15, -2.5) node {$req$};
+\draw [->, dashed] (18, -2) -- (18, 0);
+\draw (18, -2.5) node {$req$};
+% Emails
+\draw [->] (7.5, 2) -- (7.5, 0);
+\draw (7.5, 2.5) node {$mail$};
+\draw [->] (13, 2) -- (13, 0);
+\draw (12.5, 2.5) node {$mail$};
+\draw [->] (14, 2) -- (14, 0);
+\draw (14.5, 2.5) node {$mail$};
+% Errors
+\draw [->] (6, -0.6) -- node[pos=.5, above, scale=.7] {$error$} (3, -0.6);
+\draw [->] (9, -0.6) -- node[pos=.5, above, scale=.7] {$error$} (7.5, -0.6);
+\draw [->] (12, -1.3) -- node[pos=.5, above, scale=.7] {$error$} (7.5, -1.3);
+\draw [->] (15, -0.6) -- node[pos=.5, above, scale=.7] {$error$} (13, -0.6);
+\draw [->] (18, -1.3) -- node[pos=.5, above, scale=.7] {$error$} (14, -1.3);
+
+\end{tikzpicture}
+\caption{Example for computing the error}
+\label{fig:model_error}
+\end{figure}
+
+An example is depicted in Figure \ref{fig:model_error}.
+
+This cost function has the advantage of penalizing strategies when there are sending too much requests without new email received.
+
+# Optimal Fixed Time Interval
+
+In this section, we want to find the optimal time interval for our email distributions.
+
+## Definition of the Problem
+In the case of the fixed time interval strategy, $U_n = n \times k$ where $k$ is the time interval between two requests, and $U_0 = 0$.
+
+We can now write the cost function $J$ as:
+
+\begin{equation}
+\displaystyle J = \sum _{j = 1} ^{N + 1} \left[ R_j^2 + \sum _{i = 1} ^{M_j} \left(R_j + i k_N\right)^{2}\right]
+\end{equation}
+
+with $M_j = \floor[\bigg]{\frac{T_j}{k}} - \ceil[\bigg]{\frac{T_{j-1}}{k_N}}$.
+
+We define:
+
+* $k_N$ is the time interval for $N$ received emails
+
+* $R_j = \ceil[\bigg]{\frac{T_{j-1}}{k_N}}k_N - T_{j-1}$.
+
+* $J_1 = M_j R_j^{2}$
+
+* $J_2 = 2 k R_j\frac{M_j(M_j + 1)}{2}$
+
+* $J_3 = \frac{k_N^{2}}{6}M_j(M_j + 1)(2M_j + 1)$
+
+* $\Delta T_j = T_j - T_{j-1}$.
+
+We can expand $J$:
+
+$$
+\displaystyle J = \sum _{j=1}^{N+1} \left(R_j^2 + J_1 + J_2 + J_3 \right)
+$$
+
+We want to minimize $J$.
+So we will find a lower bound of $J$ and find the value of $k$ that minimize it.
+
+We remind the reader that:
+
+$$
+x - 1 < \floor{x} \leq x
+$$
+and
+$$
+x \leq \ceil{x} < x + 1
+$$
+
+## Lower Bound of $J$
+
+Let us find a lower bound for each of these quantities:
+
+* $M_j j > \frac{1}{k_N}\Delta T_j$
+
+* $R_j > 0$
+
+* $J_1 > 0$
+
+* $J_2 > 0$
+
+* $J_3 > \Delta T_j\left(\frac{1}{3k_N}\left(\Delta T_j\right)^2 + \frac{1}{2}\left(\Delta T_j\right) + \frac{k_N}{6}\right)$
+
+Let us sum everything:
+
+\begin{equation}
+\begin{split}
+J & = \sum_{j=1}^{N+1}\left(R_j^2 + J_1 + J_2 + J_3\right) \\
+  & > \sum_{j=1}^{N+1} \left(\frac{1}{3k_N}\Delta T_j^3 + \frac{1}{2}\Delta T_j^2 + \frac{k_N}{6}\Delta T_j\right) \\
+  & = L(k_N)
+\end{split}
+\end{equation}
+
+We want to minimize, so let us differentiate the lower bound with respect to $k_N$:
+
+\begin{equation}
+\begin{split}
+\frac{dL}{dk_N}(k_N) & = \sum_{j=1}^{N+1}\left(\frac{-1}{3k_N^2}\Delta T_j ^3 + \frac{1}{6}\Delta T_j\right) \\
+                 & = \frac{1}{6}T_{N+1} - \frac{1}{3k_N^2}\sum_{j=1}^{N+1}\Delta T_j ^3
+\end{split}
+\end{equation}
+
+Let us solve for $\frac{dL}{dk_N}(k_N) = 0$:
+\begin{equation}\label{eq:approx_k}
+%\displaystyle k^3 + \frac{13}{12(N+1)}T_{N+1}k^2 - \frac{1}{6(N+1)}\sum_{j=1}^{N+1}\Delta T_j^3 = 0
+\displaystyle k_N^* = \sqrt{\frac{2\displaystyle \sum_{j=1}^{N+1}\Delta T_j^3}{T_N}}
+\end{equation}
+
+$N$ is the number of emails received this day.
+$T_{N+1}$ is the end of the day.
+
+## Analysis
+
+There is no easy way to compute the sum of the $(\Delta T_j)^3$.
+Consequently, we will approximate this value by a simulation.
+
+```{r, functions_for_values_of_k_computation, include=FALSE}
+N <- 40
+sum_cube <- function(N) {
+    Ts <- rnorm(N, mean = mean, sd = sd)
+    Ts <- append(Ts, 0)
+    Ts <- append(Ts, time_interval)
+    Ts <- sort(Ts)
+    diffs <- diff(Ts)
+    diffs <- diffs**3
+    sum(diffs)
+}
+
+approx_sum_cube <- function(N) {
+    iterations = 10000
+    data <- seq(1, iterations, 1)
+    for (i in 1:iterations) {
+        data[i] = sum_cube(N)
+    }
+    mean(data)
+}
+
+find_upper_bound_k <- function(n) {
+    tn = time_interval
+    coefs <- c(-(1/6)*v_approx_sum_cube[n], 0, 13*tn/12, n + 1)
+    results <- polyroot(coefs)
+    Re(results[1])
+}
+
+find_lower_bound_k <- function(n) {
+    tn = time_interval
+    coefs <- c((1/6)*v_approx_sum_cube[n], 0, -13*tn/12, n + 1)
+    results <- polyroot(coefs)
+    Re(results[1])
+}
+
+approx_k <- function(n) {
+    tn = time_interval
+    sqrt(2 * v_approx_sum_cube[n] / (1 * tn))
+}
+```
+
+```{r, computing_values_of_k, cache=TRUE, echo=FALSE, message=FALSE, fig.cap="\\label{fig:approx_k}Approximation of the optimal value of $k_N$"}
+N_max <- 25
+v_approx_sum_cube <- seq(0, N_max, 1)
+number_of_mails <- seq(0, N_max, 1)
+upper_bound_k <- seq(0, N_max, 1)
+approx <- seq(0, N_max, 1)
+opti_period <- data.frame(number_of_mails, upper_bound_k, approx)
+for (i in 0:(N_max + 1)) {
+    v_approx_sum_cube[i] = approx_sum_cube(i)
+    opti_period$upper_bound_k[i] <- find_upper_bound_k(i)
+    # opti_period$approx[i] <- find_lower_bound_k(i)
+    opti_period$approx[i] <- approx_k(i)
+}
+
+opti_period$upper_nb_checks <- time_interval / opti_period$upper_bound_k
+
+
+# linear_model <- lm(data = opti_period, upper_bound_k ~ I(1/number_of_mails) + number_of_mails)
+# summary(linear_model)
+
+ggplot(data = opti_period) +
+    geom_line(aes(x = number_of_mails, y = approx)) +
+    geom_point(aes(x = number_of_mails, y = approx)) +
+    expand_limits(x = 0, y = 0) +
+    xlab("Number of mails") +
+    ylab("k") +
+    ggtitle("Approximate optimal value of k for a given number of mails") +
+    theme_bw()
+```
+
+But we do not know how many mail we will receive each day.
+
+But we know the distribution of the number of emails.
+
+Let us compute the weighted mean for the value of $k^*_N$:
+
+$$
+k^* = \sum_{n=0}^{+\infty}k^*_n \times P(N = n)
+$$
+
+where $N \rightsquigarrow Exp(\lambda)$.
+
+```{r, echo=FALSE}
+opti_period$w <- opti_period$upper_bound_k * lambda * exp(- lambda * (opti_period$number_of_mails))
+opti_period$w_approx <- opti_period$approx * lambda * exp(- lambda * (opti_period$number_of_mails))
+#mean_k <- sum(opti_period$w)
+mean_k_approx <- sum(opti_period$w_approx)
+mean_k<- sum(opti_period$w_approx)
+```
+
+From the estimated value of $\lambda$ seen above, we get that $k^* = `r as.integer(mean_k)`$.
+
+This means a request every `r as.integer(mean_k / 60)` minutes, for a total of `r as.integer(1 + time_interval / mean_k)` checks everyday.
+
+## Validation
+
+We can simulate typical days for different values of $k$ and compute the mean error during these days.
+We can then compare the theorical value of $k$ minimizing the error found previously versus the experimental value.
+
+```{r, values_of_k, cache=TRUE, echo=FALSE, fig.cap="\\label{fig:expe_k}Mean Error for a given Time Interval"}
+data_k <- read.csv("../values_of_k.csv", header = F, sep = ",")
+colnames(data_k) <- c("iter", "interval", "error", "req")
+data_k <- data_k %>% group_by(interval) %>% summarise(mean_error = mean(error), ci_error = 2*sd(error)/sqrt(n()), mean_req = mean(req))
+ggplot(data = data_k, aes(x = log10(interval), y = log10(mean_error), color = factor(mean_req))) +
+    geom_point() +
+    geom_vline(xintercept = log10(as.integer(mean_k))) +
+    xlab("Log10 of Interval Duration") +
+    ylab("Log10 of Error") +
+    labs(color = "Number of requests") +
+    ggtitle("Mean Error for the Given Time Interval Duration") +
+    theme_bw() +
+    theme(legend.position = "bottom", legend.box = "horizontal")
+```
+
+We can see on figure \ref{fig:expe_k} that the theoretical optimal value of $k^*$ (vertical line) is close to the experimental optimal.
+
+We can also see that there are clusters of points.
+Each segment correspond to a certain number of requests.
+For instance the last segment corresponds to time intervals requireing only one request per day.
+
+In our case, we see that the minimum for the error is reached for the lowest time interval requireing two requests per day.
+This value of $k^*$ would be `r 12*60*60` i.e. a request every `r 12` hours.
+
+## Summary
+
+In this section, we manage to find the optimal time interval for our email distribution.
+
+To summarise the process to finding this optimal value, here is a little guide:
+
+1. Determine the distribution of the number of emails received per day
+
+2. Determine the distribution of emails during the day
+
+3. Compute the approximate value of $k^*_N$ as in Equation \ref{eq:approx_k}
+
+4. Compute the weighted sum of the $k^*_N$
+
+4. With this value of $k^*$, compute how many requests are required in a day
+
+5. Compute the lowest value of $k$ for this number of requests per day
+
+For the remaining of this paper, we will compare the other approach to the constant time interval method with the optimal value of $k^*$ for our distribution ($k^* = `r 12*60*60`$).
+
+```{r, include=FALSE}
+Sys.setenv(K_OPTI = 12*60*60)
+```
+
+# Probabilistic Approach
+
+```{r, setting_m_and_M, include = FALSE, cache = TRUE}
+# Sys.setenv(MAX_VALUE = 14400)
+Sys.setenv(MAX_VALUE = 20466)
+Sys.setenv(MIN_VALUE = 900)
+```
+
+```{sh, experiment_normal, dependson = c("setting_m_and_M"), echo = FALSE, cache = TRUE}
+nix-shell ../shell.nix --command "python ../run.py normal $LAMBDA $MEAN $STD_DEV $K_OPTI 10000 $MIN_VALUE $MAX_VALUE data_normal_ks.csv"
+```
+
+```{r, reading_file_proba_approach, dependson = c("experiment_normal"), include=FALSE, cache = TRUE}
+data_normal <- read.csv("data_normal_ks.csv", header = F, sep = ",")
+colnames(data_normal) <- c("min", "max", "error", "req", "error_k", "req_k", "error10", "req10", "error30", "req30")
+```
+
+```{r, stats_data_proba, dependson = c("reading_file_proba_approach"), include = FALSE, cache=TRUE}
+get_ci <- function(speedup_e, speedup_r) {
+    mean_speedup_req <- mean(speedup_r)
+    mean_speedup <- mean(speedup_e)
+    sd_speedup <- sd(speedup_e)
+
+    speedup_inf <- mean_speedup - 2 * sd_speedup / sqrt(length(speedup_e))
+    speedup_sup <- mean_speedup + 2 * sd_speedup / sqrt(length(speedup_e))
+    c(speedup_inf, speedup_sup, mean_speedup_req)
+}
+
+ci_k_opti <- get_ci(data_normal$error_k / data_normal$error, data_normal$req_k / data_normal$req)
+ci_10 <- get_ci(data_normal$error10 / data_normal$error, data_normal$req10 / data_normal$req)
+ci_30 <- get_ci(data_normal$error30 / data_normal$error, data_normal$req30 / data_normal$req)
+
+M <- data_normal$max[1]
+m <- data_normal$min[1]
+```
+
+```{r, g_function_definition, include = FALSE}
+g <- function(x, M, m, mu, sigma) {
+    M - (M-m) * dnorm(x, mean = mu, sd = sigma) * sigma * sqrt(2 * pi)
+}
+```
+
+## Principle
+
+We saw previsouly that the distribution of emails during the day could be represented as a normal distribution.
+In this section, we define a strategy using this distribution.
+
+The idea is to have the time interval adapt in function of the time of the day.
+The closer we are to the mean (top of the bell) the more the time interval will decrease.
+
+Let $M$ be the maximal time interval and $m$ be the minimal time interval.
+This means that at all time, the time interval will be between $m$ and $M$.
+
+If $f$ is the probability density function of the normal distribution $\mathcal{N}(\mu, \sigma^2)$, then let $g$ be the function taking the current time and returning the value of the interval between two requests:
+
+\begin{equation}
+\forall x \in [0, `r time_interval`], g(x) = M - (M-m)\frac{f(x)}{f(\mu)}
+\end{equation}
+
+```{r, showing_g, dependson = c("stats_data_proba"), echo=FALSE, cache=TRUE, fig.cap="\\label{fig:g}Plot of $g$"}
+time <- seq(1, 24*60*60, 1)
+g_values <- g(time, M, m, mean, sd)
+ggplot() +
+    geom_line(aes(x = time, y = g_values)) +
+    geom_hline(yintercept = m) +
+    geom_hline(yintercept = M) +
+    expand_limits(x = 0, y = 0) +
+    xlab("Time") +
+    ylab("g(t)") +
+    theme_bw()
+```
+
+Thus,
+\begin{equation}
+\forall n \geq 0, U_{n+1} = U_{n} + g(U_n)
+\end{equation}
+
+with $U_0 = 0$.
+
+```{r, g_computation_example, dependson = c("stats_data_proba"), echo=FALSE, cache=TRUE, fig.cap = "\\label{fig:day_proba}Instants of the requests during the day using the probabilistic approach"}
+mu <- mean
+sigma <- sd
+
+u_0 <- 0
+iterations <- 100
+u_n <- seq(1, iterations, 1)
+for (i in 1:iterations) {
+    if (i == 1) {
+        u_n[i] = u_0
+    } else {
+        u_n[i] = u_n[i-1] + g(u_n[i-1], M, m, mu, sigma)
+    }
+}
+
+time <- seq(1, iterations, 1)
+inv_norm_df <- data.frame(time, u_n)
+inv_norm_df <- inv_norm_df[inv_norm_df$u_n <= 24 * 60 * 60,]
+
+ggplot(inv_norm_df) +
+    geom_point(aes(y = time, x = u_n)) +
+    xlim(0, 24 * 60 * 60) +
+    xlab("Time") +
+    ylab("Request Number") +
+    ggtitle("Time of the requests for the probabilistic strategy") +
+    theme_bw()
+# length(inv_norm_df$u_n)
+```
+
+## Simulations
+
+We ran some simulations with this model and compared the results with the optimal time interval value found previously.
+
+The mininal time interval was $m = `r m`$, the maximal time interval was $M = `r M`$.
+We choose $M$ as the mean time between two received emails as defined in section \ref{sec:mean_time_2_emails}.
+
+We define the error gain for this model as:
+
+$$
+G_{err} = \frac{Err_{k}}{Err_{prob}}
+$$
+
+and the request gain as:
+
+$$
+G_{req} = \frac{Req_{k}}{Req_{prob}}
+$$
+
+We thus have the following 95% Confidence Intervals:
+
+* vs. $\Delta T = k^*$:
+
+    * $G_{req} = `r ci_k_opti[3]`$
+
+    * $G_{err} \in [`r ci_k_opti[1]`, `r ci_k_opti[2]`]$
+
+* vs. $\Delta T = 10$mins:
+
+    * $G_{req} = `r ci_10[3]`$
+
+    * $G_{err} \in [`r ci_10[1]`, `r ci_10[2]`]$
+
+* vs. $\Delta T = 30$mins:
+
+    * $G_{req} = `r ci_30[3]`$
+
+    * $G_{err} \in [`r ci_30[1]`, `r ci_30[2]`]$
+
+## Summary
+
+This approach managed to reduce the number of requests sent and the error for time intervals of 10 and 30 minutes.
+It did not manage to improve compared to time interval of $k^*$.
+These results are strongly linked to the values of $m$ and $M$.
+
+The befenits of this method is that we send less requests during time of the day where there is less activity, and we send more requests when there is more activity.
+This allows the user to still be reactive during activity peaks while decreasing the number of requests.
+
+# PID Controller
+
+## Presentation
+
+The goal is now to design a PID Controller able to regulate the time period between two requests.
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[scale=0.4]
+\draw [->] (-2, 5) -- (-0.4, 5) node[pos=.2, above] {$ref$};
+\draw [->] (0.4, 5) -- (2, 5) node[pos=.5, above] {$e(n)$};
+\draw (2, 6) rectangle (6, 4) node[pos=.5] {Controller};
+\draw [->] (6, 5) -- (8, 5) node[pos=.5, above] {$u(n)$};
+\draw (8, 6) rectangle (12, 4) node[pos=.5] {System};
+\draw [->] (12, 5) -- (16, 5) node[pos=.5, above] {$x(n)$};
+\draw (5, 2) rectangle (9, 0) node[pos=.5] {Sensor};
+\draw [->] (14, 5) -- (14, 1) -- (9, 1);
+\draw [->] (5, 1) -- node[pos=.5, above] {$y(n)$} (0, 1) -- (0, 4.6);
+\draw (0, 5) circle (.4);
+\draw [-] (0.28, 5.28) -- (-0.28, 4.72);
+\draw [-] (-0.28, 5.28) -- (0.28, 4.72);
+\draw (.5, 4.5) node {-};
+\draw (-.3, 5.7) node {+};
+\end{tikzpicture}
+\caption{Example of feedback loop}
+\label{fig:feedback}
+\end{figure}
+
+The idea is the following: if I have no mail, I increase the time interval, if I just received a mail, then I decrease the time interval.
+
+The expression of a PID Controller is as follow:
+
+\begin{equation}
+\begin{split}
+u(n+1) = u(n) & + k_p e(n) \\
+              & + k_i \int_{0}^{n}e(x)dx\\
+              & + k_d \frac{d e}{dt}(n)
+\end{split}
+\end{equation}
+
+$e(n)$ is the error at step $n$ and $u(n)$ is the time interval between two requests at step $n$.
+
+We will define the error as the time since the last email received.
+
+The sign of the error is positive if we did not receive a mail since our last check, negative otherwise.
+
+## Experiments
+
+```{sh, run_experiment_pid, dependson = c("setting_m_and_M"), echo = FALSE, cache = TRUE}
+nix-shell ../shell.nix --command "python ../run.py all_pid $LAMBDA $MEAN $STD_DEV $K_OPTI 1000 $MIN_VALUE $MAX_VALUE data_experiment.csv 0 2 0.1"
+```
+
+```{r, read_data_pid, dependson = c("run_experiment_pid"), cache=TRUE, include=FALSE}
+data_expe <- read.csv("data_experiment.csv", header = F, sep = ",")
+colnames(data_expe) <- c("kp", "ki", "kd", "min_time", "max_time", "error_pid", "req_pid", "error_k", "req_k", "error10", "req10", "error30", "req30")
+head_min_time <- data_expe$min_time[1]
+head_max_time <- data_expe$max_time[1]
+```
+
+```{r, clean_data_pid, dependson = c('read_data_pid'), cache=TRUE, include=FALSE}
+df_pid <- data_expe %>% group_by(kp, ki, kd) %>% summarise(error_pid = mean(error_pid),
+                                                           req_pid = mean(req_pid),
+                                                           error_k = mean(error_k),
+                                                           req_k = mean(req_k),
+                                                           error10 = mean(error10),
+                                                           req10 = mean(req10),
+                                                           error30 = mean(error30),
+                                                           req30 = mean(req30))
+df_speedup <- df_pid %>% group_by(kp, ki, kd) %>% summarise(speedup_error = error_k / error_pid,
+                                                            speedup_req = req_k / req_pid,
+                                                            speedup_error10 = error10 / error_pid,
+                                                            speedup_req10 = req10 / req_pid,
+                                                            speedup_error30 = error30 / error_pid,
+                                                            speedup_req30 = req30 / req_pid)
+```
+
+We designed the experiments to test every controller within a range of values of the $k_p, k_i, k_d$.
+We then computed the gains for the error and for the number of requests.
+
+```{r, pre_print_data_pid, echo=FALSE}
+head <- head(df_speedup[order( -df_speedup$speedup_error * df_speedup$speedup_req),], n = 1)
+head_kp <- head$kp
+head_ki <- head$ki
+head_kd <- head$kd
+Sys.setenv(KP = head_kp)
+Sys.setenv(KI = head_ki)
+Sys.setenv(KD = head_kd)
+```
+
+We also had to choose the minimal and maximal time intervals.
+We decided to take $m = `r head_min_time`$ and $M = `r head_max_time`$.
+$M$ is the mean time between two emails as defined in section \ref{sec:mean_time_2_emails}.
+
+The parameters that gave us the best overall gains are:
+
+* $k_p = `r head_kp`$
+
+* $k_i = `r head_ki`$
+
+* $k_d = `r head_kd`$
+
+```{sh, experiment_pid, dependson = c("setting_m_and_M"),  echo = FALSE, cache = TRUE}
+nix-shell ../shell.nix --command "python ../run.py single_pid $LAMBDA $MEAN $STD_DEV $K_OPTI 1000 $MIN_VALUE $MAX_VALUE best_pid.csv $KP $KI $KD"
+```
+
+```{r, conf_intervals_pid, dependson = c("experiment_pid"), cache=TRUE, echo=FALSE}
+best_pid <- read.csv("best_pid.csv", header = F, sep = ",")
+colnames(best_pid) <- c("kp", "ki", "kd", "min_time", "max_time", "error_pid", "req_pid", "error_k", "req_k", "error10", "req10", "error30", "req30")
+get_ci <- function(speedup) {
+    mean_speedup <- mean(speedup)
+    sd_speedup <- sd(speedup)
+
+    n <- length(speedup)
+
+    inf <- mean_speedup - 2 * sd_speedup / sqrt(n)
+    sup <- mean_speedup + 2 * sd_speedup / sqrt(n)
+    c(inf, sup)
+}
+
+ci_err_k <- get_ci(best_pid$error_k / best_pid$error_pid)
+ci_req_k <- get_ci(best_pid$req_k / best_pid$req_pid)
+
+ci_err10 <- get_ci(best_pid$error10 / best_pid$error_pid)
+ci_req10 <- get_ci(best_pid$req10 / best_pid$req_pid)
+
+ci_err30 <- get_ci(best_pid$error30 / best_pid$error_pid)
+ci_req30 <- get_ci(best_pid$req30 / best_pid$req_pid)
+```
+
+We then did a full comparison of our best PID controller against intervals of $k^*$, 10mins and 30mins.
+
+The experiments gave us the following 95% Confidence Intervals:
+
+* vs. $\Delta T = k^*$:
+
+    * $G_{req} \in [`r ci_req_k[1]`, `r ci_req_k[2]`]$
+
+    * $G_{err} \in [`r ci_err_k[1]`, `r ci_err_k[2]`]$
+
+* vs. $\Delta T = 10$mins:
+
+    * $G_{req} \in [`r ci_req10[1]`, `r ci_req10[2]`]$
+
+    * $G_{err} \in [`r ci_err10[1]`, `r ci_err10[2]`]$
+
+* vs. $\Delta T = 30$mins:
+
+    * $G_{req} \in [`r ci_req30[1]`, `r ci_req30[2]`]$
+
+    * $G_{err} \in [`r ci_err30[1]`, `r ci_err30[2]`]$
+
+## Summary
+
+Using a PID managed to decrease the error and the number of requests compared to intervals of 10 and 30 minutes.
+It is less efficient than an interval of $k^*$.
+However, it managed to have an error inferior to 150% of the error for $k^*$.
+
+The PID Controller approach also performed better than the probabilistic approach.
+Indeed, it managed to have higher gains in error and in the number of requests compared to the probabilistic approach.
+
+
+# Conclusion
+
+In this paper, we presented multiple strategies to reduce the number of requests sent to the email server while trying to keep the error low.
+First, we computed the optimal time interval for the classic periodical approach.
+Then, we presented an approach using the probabilistic distribution of the email reception during the day.
+This strategy managed to improve the error and the number of requests sent compared to non-optimal standard time intervals.
+Finally, we introduced a approach using control theory with a PID Controller.
+This final approach showed far better results than the probabilistic approach, but still was unable to beat the classical periodical approach with the optimal time interval.
+
+We remind the reader that the data from this paper comes from my personal emails and that the results are only valid for my emails.
+However, the methods should be reproducible.
+
+
+# References

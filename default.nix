@@ -5,7 +5,7 @@ let
   app_version = "1.0";
 in {
   ctrl_email = python37Packages.buildPythonPackage rec {
-    name = "${app_name}-${version}";
+    name = "${app_name}";
     version = "${app_version}";
 
     src = fetchTarball("https://github.com/GuilloteauQ/Ctrl-Email/tarball/master");
@@ -14,6 +14,7 @@ in {
       google-auth-httplib2
       google-auth-oauthlib
       notify2
+      scipy
     ];
 
     doCheck = false;

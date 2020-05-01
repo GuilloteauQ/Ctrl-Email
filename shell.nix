@@ -8,5 +8,6 @@ stdenv.mkDerivation {
     python37Packages.google-auth-httplib2
     python37Packages.google-auth-oauthlib
     python37Packages.notify2
+    python37Packages.scipy
   ];
 }

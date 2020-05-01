@@ -1,6 +1,8 @@
 # Ctrl-Email
 PID controlled application querying your Email accounts for new messages
 
+Link to the paper: [Paper](https://github.com/GuilloteauQ/Ctrl-Email/blob/master/analysis/analysis.pdf)
+
 ## The idea
 
 Checks periodically for new emails using IMAPS.
@@ -11,7 +13,9 @@ The period between 2 queries is regulated by a [PID Controller](https://en.wikip
 
 ### NiXOS
 
-TODO
+```bash
+nix-env -i -f https://github.com/GuilloteauQ/Ctrl-Email/tarball/master
+```
 
 ### Others
 

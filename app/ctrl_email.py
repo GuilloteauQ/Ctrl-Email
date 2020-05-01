@@ -45,7 +45,7 @@ def extract_config(filename):
 
 
 def main():
-    path_config_folder = "~/.config/ctrl_email/config.json"
+    path_config_folder = "/home/quentin/.config/ctrl_email/config.json"
     path_home_folder = "~/.ctrl_email.json"
     if os.path.exists(path_config_folder):
         config_file_path = path_config_folder
@@ -55,12 +55,15 @@ def main():
         print("Config file must be either in {} or in {}".format(path_home_folder, path_config_folder))
         return 1
 
-    cclients = extract_config(config_file_name)
+    cclients = extract_config(config_file_path)
 
     notify2.init("Ctrl-Email")
     notifyer = notify2.Notification(None, icon="")
     notifyer.set_urgency(notify2.URGENCY_NORMAL)
     notifyer.set_timeout(10000)
+
+    for cclient in cclients:
+        cclient.client.extract_data_for_analysis("{}.csv".format(cclient.name))
 
     while True:
         min_sleep_time = min(map(lambda c: c.sleep_time, cclients))

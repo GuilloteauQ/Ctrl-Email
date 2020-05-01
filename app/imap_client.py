@@ -28,9 +28,29 @@ class IMAPClient:
         ids = data[0].split()
         return ids
 
-    def get_message_internal_date(self, message_id):
+    def get_all_ids(self):
+        self.imap.select(self.inbox)
+        tmp, data = self.imap.search(None, 'ALL')
+        ids = data[0].split()
+        return ids
+
+    def extract_data_for_analysis(self, filename):
+        self.connect()
+        message_ids = self.get_all_ids()
+
+        data_file = open(filename, "w")
+        l = len(message_ids)
+        for (i, msg_id) in enumerate(message_ids):
+            print("{}/{}".format(i, l))
+            timestamp = self.get_message_internal_date(msg_id, False)  
+            data_file.write(str(timestamp) + "\n")
+        data_file.close()
+        self.disconnect()
+
+    def get_message_internal_date(self, message_id, to_unseen):
         tmp, data = self.imap.fetch(message_id, '(RFC822)')
-        self.imap.store(message_id, '-FLAGS', '\\SEEN')
+        if to_unseen:
+            self.imap.store(message_id, '-FLAGS', '\\SEEN')
         msg = email.message_from_bytes(data[0][1])
         date_tuple = email.utils.parsedate_tz(msg['Date'])
         local_date = email.utils.mktime_tz(date_tuple)
@@ -54,7 +74,7 @@ class IMAPClient:
         unread_emails = 0
         for message_id in ids:
             if not self.do_i_know_you(message_id):
-                internal_date_message = self.get_message_internal_date(message_id)
+                internal_date_message = self.get_message_internal_date(message_id, True)
                 new_emails += 1
                 self.remember_message(message_id, internal_date_message)
             else:

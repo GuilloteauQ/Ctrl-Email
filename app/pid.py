@@ -1,6 +1,6 @@
 
 class PID:
-    def __init__(self, variable = 0, kp = 0, ki = 0, kd = 0, delta_t = 1, max_value=3000):
+    def __init__(self, variable = 0, kp = 0, ki = 0, kd = 0, delta_t = 1, max_value=3000, min_value = 0):
         self.variable = variable
         self.kp = kp
         self.ki = ki
@@ -9,6 +9,7 @@ class PID:
         self.previous_error = 0
         self.delta_t = delta_t
         self.max_value = max_value
+        self.min_value = min_value
 
     def update(self, error):
         self.cumulated_error += error
@@ -18,8 +19,8 @@ class PID:
 
         u = self. variable + proportional_term + integral_term + derivative_term
 
-        if u < 0:
-            u = 0
+        if u < self.min_value:
+            u = self.min_value
         if u > self.max_value:
             u = self.max_value
 
