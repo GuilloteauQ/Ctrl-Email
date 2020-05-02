@@ -1,7 +1,7 @@
 # Ctrl-Email
 PID controlled application querying your Email accounts for new messages
 
-Link to the paper: [Paper](https://github.com/GuilloteauQ/Ctrl-Email/blob/master/analysis/analysis.pdf)
+Link to the paper: WIP! [Paper](https://github.com/GuilloteauQ/Ctrl-Email/blob/master/analysis/analysis.pdf)
 
 ## The idea
 

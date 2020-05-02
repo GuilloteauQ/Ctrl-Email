@@ -1,5 +1,5 @@
 ---
-title: "How to reduce the number of email server lookup requests while keeping error low ?"
+title: "How to reduce the number of email server lookup requests while minimizing error ?"
 classoption: twocolumn
 author: |
     | Quentin Guilloteau
@@ -19,6 +19,7 @@ output:
         fig_caption: true
     html_document:
         number_sections: true
+        fig_caption: true
         code_folding: hide
         df_print: paged
         highlight: tango
@@ -41,7 +42,10 @@ library(MASS)
 library(lubridate)
 library(knitr)
 library(codetools)
+library(mixtools)
+library(xtable)
 options(scipen=999)
+options(digits=3)
 # opts_chunk$set(autodep = TRUE)
 # dep_auto()
 ```
@@ -63,12 +67,14 @@ If we keep our mail client open during the day, this could generate a significan
 Moreover, most of the time, the server will respond that there are no new emails.
 
 ```{r, intro, include=FALSE, message=FALSE}
-start_time_work <- 9
+start_time_work <- 8
 end_time_work <- 6
 total_time_work <- ((12 + end_time_work) - start_time_work) * 60 * 60
 bytes_per_req <- 2415
 total_bytes_5min <- as.integer(bytes_per_req * total_time_work / (5 * 60))
 total_bytes_30min <- as.integer(bytes_per_req * total_time_work / (30 * 60))
+nb_employees_facebook <- 48268
+nb_email_accounts <- 5.6e9
 ```
 
 
@@ -77,11 +83,16 @@ Imagine you start your mail client at `r start_time_work`am and close it at `r e
 Your client sends a request to the server every 5 minutes.
 The request will require some TCP magic, and the total exchange will be around 2 kB (`r bytes_per_req` B in my case).
 So at the end of the day, your client would have been responsible for `r as.integer(total_bytes_5min/1000)` kB.
-This would represent `r as.integer(5 * total_bytes_5min / 1000)` kB per work week (i.e. 5 days), `r as.integer(5 * 4 * total_bytes_5min / 1000000)` GB per month and `r as.integer(5 * 4 * 12 * total_bytes_5min / 1000000)` GB yearly.
+This would represent `r as.integer(5 * total_bytes_5min / 1000)` kB per work week (i.e. 5 days), `r as.integer(5 * 4 * total_bytes_5min / 1000000)` MB per month and `r as.integer(5 * 4 * 12 * total_bytes_5min / 1000000)` MB yearly.
+This quantity can be considered small and negligable, but do not forget that this is for a single individual.
+A study by the Radicati group [@Radicati] estimates the number of emails users in the world to 3 Billion in 2019 with an average of 1.9 email accounts per user.
+This represents a total of 5.6 Billion emails accounts.
+So, if we suppose that all of these accounts clients are running during the work day, all the requests produced in one year would add up to `r nb_email_accounts * 5 * 4 * 12 * total_bytes_5min / 10e12` TB.
+Besides, all this traffic consumes power at different levels (i) the email client (ii) the network transmitting the requests (iii) the server answering the requests (iv) the cooling system of the server.
 
 
 A longer time interval between two server requests will also decrease the reactivity to an email.
-Indeed, if someone sends me an email between two server requests, I have to wait the next request to know that I receive an email.
+Indeed, if someone sends an email between two server requests, the user has to wait the next request to know that he received an email.
 There is thus a tradeoff to find between the number of requests sent and the time between a mail is sent to us and the time we receive it.
 
 
@@ -92,7 +103,7 @@ Then we will look into a probiblistic approach and finish with a solution involv
 
 # Email Distribution
 
-We will take a look at the emails I have received on my school account during my scholarship.
+We will take a look at the emails I have received on my school account during the past 3 years.
 
 ```{r, reading_data, include=FALSE, cache=TRUE}
 df <- read.csv(params$filename, header = F)
@@ -105,8 +116,10 @@ total_days <- as.integer((max(df$timestamp) - min(df$timestamp)) / time_interval
 
 By looking a the data, I have received `r total_emails` emails over a `r total_days` day span.
 
-## Distribution of number of emails received everyday
+In their report, @Radicati estimate that the average number of emails received in a day by an average business worker is 126 in 2019.
 
+## Distribution of number of emails received everyday
+\label{sec:sec_exp}
 
 ```{r, time_managment, message=FALSE, include=FALSE, cache=TRUE}
 df$time <- as.POSIXct(df$timestamp, origin="1970-01-01")
@@ -147,13 +160,33 @@ ggplot(mails_per_day) +
     theme_bw()
 ```
 
+
+```{r, include = FALSE}
+mu_N <- 126
+percentage_sigma <- 10
+sigma_N <- mu_N / percentage_sigma
+```
+
+Let us take $\mu_N = `r mu_N`$.
+The @Radicati study does not give the distribution of the number of emails received per day, nor the standard deviation.
+We will assume that the distribution is normal with an standard deviation $\sigma_N = `r sigma_N`$ (`r percentage_sigma` % of $\mu_N$).
+This would give the following distribution:
+
+```{r, echo = FALSE}
+nb_emails <- seq(1, 250, 1)
+ggplot() +
+    geom_line(aes(x = nb_emails, y = dnorm(nb_emails, mu_N, sigma_N))) +
+    theme_bw()
+```
+
+
 ## Email Distribution during the Day
 
 We now want to know when do we receive emails during the day.
 
 Figure \ref{fig:hist} depicts the time of reception of the emails during the day.
 
-```{r, histogram, echo=FALSE, message=FALSE, fig.cap="\\label{fig:hist}Time of reception of the emails during a day"}
+```{r, histogram, include = FALSE, echo=FALSE, message=FALSE, fig.cap="\\label{fig:hist}Time of reception of the emails during a day"}
 fit <- fitdistr(df$seconds, "normal")
 para <- fit$estimate
 # para
@@ -171,34 +204,51 @@ ggplot(data = df) +
     theme_bw()
 ```
 
+```{r, echo=FALSE, message=FALSE}
+mix <- normalmixEM(df$seconds, k = 4)
+
+# plot(mixmdl,which=2)
+# lines(density(df$seconds), lty=2, lwd=2)
+
+multi_normal <- function(x, mix) {
+    s <- 0
+    for (i in 1:(length(mix$mu))) {
+        s <- s + mix$lambda[i] * dnorm(x, mix$mu[i], mix$sigma[i])
+    }
+    s
+}
+
+ggplot(data = df) +
+    geom_histogram(aes(x = seconds, y = ..density..), bins=50) +
+    geom_line(aes(x = seconds, y = multi_normal(seconds, mix)), color = "blue") +
+    xlab("Seconds of the day") +
+    ylab("Density") +
+    ggtitle("Distribution of the Time of Reception") +
+    theme_bw()
+```
+
+We will model the time of reception of emails during the day as a multimodal normal distribution with $K =$ `r length(mix$mu)` modes.
+
+```{r, echo = FALSE}
+data_mix <- data.frame(mix$lambda, mix$mu, mix$sigma)
+colnames(data_mix) <- c("lambda", "mu","sigma")
+print(xtable(data_mix, type = "latex"), file = "mix_table.tex")
+```
+
+\input{mix_table.tex}
+
+
+The density function associated with this multimodal distribution is:
+
+\begin{equation}
+f(x) = \displaystyle \sum_{i = 1}^{K} \frac{\lambda_i}{\sqrt{2\pi \sigma_i^2}}e^{-\frac{1}{2}\left(\frac{x-\mu_i}{\sigma_i}\right)^2}
+\end{equation}
+
 We can see two spikes, they are around 10am and 3pm.
 
 As an approximation, we can fit a normal distribution over the data.
 The time of reception of an email will thus follow the distribution $\mathcal{N}(\mu, \sigma ^2)$.
 With $\mu = `r as.integer(mean)`$ and $\sigma = `r as.integer(sd)`$.
-
-## Mean Time between two Emails
-\label{sec:mean_time_2_emails}
-
-Now that we know that the distribution of emails received during the day is normal ($\mathcal{N}(\mu, \sigma^2)$), we can compute the mean time between two received emails.
-
-Let $T_1, T_2 \rightsquigarrow \mathcal{N}(\mu, \sigma^2)$.
-We want to compute $\mathbb{E}[|T_1 - T_2|]$.
-
-So let $Y = |T_1 - T_2|$.
-The distribution function of $Y$ [@stack] is:
-
-\begin{equation}
-f_Y(x) = \frac{1}{\sigma\sqrt{\pi}}e^{-\frac{1}{4}\left(\frac{x}{\sigma}\right)^2}
-\end{equation}
-
-Thus we have the mean of $Y$:
-
-\begin{equation}
-\mathbb{E}[Y] = \int_0^{+\infty}xf_Y(x)dx= \frac{2\sigma}{\sqrt{\pi}}
-\end{equation}
-
-With our distribution, we thus have a mean time between two received emails of $`r 2*sd/sqrt(pi)`$, which represents `r as.integer(2 * sd / sqrt(pi))/3600` hours.
 
 ## Summary
 
@@ -382,6 +432,10 @@ $T_{N+1}$ is the end of the day.
 There is no easy way to compute the sum of the $(\Delta T_j)^3$.
 Consequently, we will approximate this value by a simulation.
 
+We are now able to compute an approximation of the optimal value of $k_N$ for a given number of emails $N$.
+However, we do not know the number of emails that we will receive during a given day.
+In order to have a value of $k$ for any number of emails, we will compute the weighted sum accorgingly to the exponential distribution found in Section \ref{sec:sec_exp}.
+
 ```{r, functions_for_values_of_k_computation, include=FALSE}
 N <- 40
 sum_cube <- function(N) {
@@ -453,11 +507,7 @@ ggplot(data = opti_period) +
     theme_bw()
 ```
 
-But we do not know how many mail we will receive each day.
-
-But we know the distribution of the number of emails.
-
-Let us compute the weighted mean for the value of $k^*_N$:
+Let us compute the weighted mean for the values of $k^*_N$:
 
 $$
 k^* = \sum_{n=0}^{+\infty}k^*_n \times P(N = n)
@@ -473,14 +523,26 @@ mean_k_approx <- sum(opti_period$w_approx)
 mean_k<- sum(opti_period$w_approx)
 ```
 
-From the estimated value of $\lambda$ seen above, we get that $k^* = `r as.integer(mean_k)`$.
+From the estimated value of $\lambda$ seen above, we get that $k^* = `r as.integer(mean_k)`$seconds interval.
 
 This means a request every `r as.integer(mean_k / 60)` minutes, for a total of `r as.integer(1 + time_interval / mean_k)` checks everyday.
+Remember that this is for my personal email distribution with an average of `r lambda_w` emails per day.
 
 ## Validation
+\label{sec:simuls}
 
-We can simulate typical days for different values of $k$ and compute the mean error during these days.
-We can then compare the theorical value of $k$ minimizing the error found previously versus the experimental value.
+In order to validate the approximate optimal value found in the previous section, we will perform a set of simulations.
+
+Each simulation will proceed as follows:
+
+1. We draw the number of emails $N$ that we will receive during the day following the distribution found in section \ref{sec:sec_exp}
+
+2. We draw $N$ random numbers between 0 (12am) and `r 24*60*60` (11:59pm). They will represent the time of reception of each email in seconds.
+
+3. Given a value of $k$ (time interval between two checks) we compute the number of requests and the error on this day for these emails reception times.
+
+Figure \ref{fig:expe_k} shows the mean error (y axis) over 1000 different simulations for given time intervals (x axis).
+The colors represent how many requests are done for the given time interval.
 
 ```{r, values_of_k, cache=TRUE, echo=FALSE, fig.cap="\\label{fig:expe_k}Mean Error for a given Time Interval"}
 data_k <- read.csv("../values_of_k.csv", header = F, sep = ",")
@@ -497,7 +559,7 @@ ggplot(data = data_k, aes(x = log10(interval), y = log10(mean_error), color = fa
     theme(legend.position = "bottom", legend.box = "horizontal")
 ```
 
-We can see on figure \ref{fig:expe_k} that the theoretical optimal value of $k^*$ (vertical line) is close to the experimental optimal.
+We can see on figure \ref{fig:expe_k} that the error associated with the approximated theoretical optimal value fo $k^*$ (vertical line) is close the global minimum of the error.
 
 We can also see that there are clusters of points.
 Each segment correspond to a certain number of requests.
@@ -505,6 +567,7 @@ For instance the last segment corresponds to time intervals requireing only one 
 
 In our case, we see that the minimum for the error is reached for the lowest time interval requireing two requests per day.
 This value of $k^*$ would be `r 12*60*60` i.e. a request every `r 12` hours.
+Remember that this is for my personal email distribution.
 
 ## Summary
 
@@ -524,7 +587,7 @@ To summarise the process to finding this optimal value, here is a little guide:
 
 5. Compute the lowest value of $k$ for this number of requests per day
 
-For the remaining of this paper, we will compare the other approach to the constant time interval method with the optimal value of $k^*$ for our distribution ($k^* = `r 12*60*60`$).
+For the remaining of this paper, we will compare the other approach to the constant time interval method with the optimal value of $k^*$ for our distribution ($k^* = `r 12*60*60`$seconds i.e. 12 hours between checks).
 
 ```{r, include=FALSE}
 Sys.setenv(K_OPTI = 12*60*60)
@@ -577,8 +640,8 @@ g <- function(x, M, m, mu, sigma) {
 We saw previsouly that the distribution of emails during the day could be represented as a normal distribution.
 In this section, we define a strategy using this distribution.
 
-The idea is to have the time interval adapt in function of the time of the day.
-The closer we are to the mean (top of the bell) the more the time interval will decrease.
+The idea is to have the time interval adapt as a function of the time of the day.
+The closer we are to the mean (top of the bell) the more the time interval will decrease (i.e. more frequent checks).
 
 Let $M$ be the maximal time interval and $m$ be the minimal time interval.
 This means that at all time, the time interval will be between $m$ and $M$.
@@ -642,6 +705,8 @@ ggplot(inv_norm_df) +
 
 We ran some simulations with this model and compared the results with the optimal time interval value found previously.
 
+In the same fashion as presented in section \ref{sec:simuls}, we TODO
+
 The mininal time interval was $m = `r m`$, the maximal time interval was $M = `r M`$.
 We choose $M$ as the mean time between two received emails as defined in section \ref{sec:mean_time_2_emails}.
 
@@ -657,7 +722,11 @@ $$
 G_{req} = \frac{Req_{k}}{Req_{prob}}
 $$
 
-We thus have the following 95% Confidence Intervals:
+Consequently, a gain higher than 1 would mean that the probabilistic approach performs better than the fixed time interval approach.
+
+The simulations included the probabilistic approach and the fixed time interval approach with the optimal value of $k^*$, 10mins and 30mins time intervals.
+
+Here are the 95% Confidence Intervals from the simulations:
 
 * vs. $\Delta T = k^*$:
 
@@ -676,6 +745,8 @@ We thus have the following 95% Confidence Intervals:
     * $G_{req} = `r ci_30[3]`$
 
     * $G_{err} \in [`r ci_30[1]`, `r ci_30[2]`]$
+
+There is no need for a confidence interval on the number of requests, as both approaches will produce a deterministic number of requests.
 
 ## Summary
 

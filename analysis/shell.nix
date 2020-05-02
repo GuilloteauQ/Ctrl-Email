@@ -10,6 +10,8 @@ stdenv.mkDerivation {
     rPackages.rmarkdown
     rPackages.lubridate
     rPackages.dplyr
+    rPackages.mixtools
+    rPackages.xtable
     pandoc
     haskellPackages.pandoc-citeproc
     # haskellPackages.pandoc-crossref
